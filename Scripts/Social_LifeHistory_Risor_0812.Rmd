@@ -1,0 +1,1521 @@
+---
+title: "Risor ruber - Social and life history analyses"
+date: "2026-08-12"
+---
+This code refers to Bunholi et al. 2026 "Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby."
+
+## Analysis overview
+
+This report reproduces the sponge-occupancy, social-organization, reproductive, and age-structure analyses.
+Manuscript figures: 1C, 3, 4, and 5.
+Supplementary figures: S5, S8, S9, S10, S11, and S12.
+
+### Required inputs
+
+Both inputs are provided in `data/social_life_history/`:
+
+- "sponge_occupancy_df.csv"
+
+- "social_data_all_complete.csv"
+
+User: please run this R Markdown file from the Scripts/ directory.
+
+### Software setup
+
+The following chunk lists the packages required by this report.
+
+```{r setup-packages}
+# Install required packages before the first run.
+# Uncomment this command only if the packages are not already installed.
+# install.packages(c(
+#   "tidyverse", "lme4", "lmerTest", "performance", "ggeffects",
+#   "piecewiseSEM", "ggdist", "ggthemes", "emmeans", "AICcmodavg",
+#   "glmmTMB", "scales", "patchwork"
+# ))
+
+# Load the packages used in this analysis.
+pkgs <- c(
+  "tidyverse", "lme4", "lmerTest", "performance", "ggeffects",
+  "piecewiseSEM", "ggdist", "ggthemes", "emmeans", "AICcmodavg",
+  "glmmTMB", "scales", "patchwork"
+)
+invisible(lapply(pkgs, require, character.only = TRUE))
+```
+
+## 1. Sponge occupancy
+
+This section tests whether sponge width predicts occupancy by *Risor ruber* and it generated Figure 1C. Counts and proportions are calculated by reef to document spatial variation in the availability of occupied sponges.
+```{r}
+data_dir <- file.path("..", "data", "social_life_history")
+output_dir <- file.path("..", "outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+social_occ <- read.csv(file.path(data_dir, "sponge_occupancy_df.csv"))
+
+social_occ$Sponge_ID <- as.factor(social_occ$Sponge_ID)
+social_occ$R_ruber <- as.character(social_occ$R_ruber)
+social_occ$Reef <- as.factor(social_occ$Reef)
+
+social_occ<- social_occ %>%
+  mutate(z_Max_width_cm = scale(Max_width_cm))
+
+#hist(social_occ$Max_width_cm)
+```
+
+```{r}
+social_occ_2<- social_occ %>%
+  filter(R_ruber == "Present")
+summary(social_occ_2)
+```
+
+#### Site-level occupancy summary
+
+```{r}
+#summarizing per site
+
+site_occupancy <- social_occ %>%
+  filter(!Reef == "Xesto") %>%
+  group_by(Reef) %>%
+  summarise(
+    n_total     = n(),
+    n_occupied  = sum(S_occ == 1),
+    prop_occupied = n_occupied / n_total,
+    .groups = "drop"
+  )
+
+site_occupancy
+```
+
+```{r}
+site_occupancy %>%
+  summarise(
+    min_prop = min(prop_occupied),
+    max_prop = max(prop_occupied)
+  )
+site_occupancy %>%
+  mutate(percent_occupied = prop_occupied * 100)
+
+```
+
+#### MODEL - glmer with binomial distribution (presence/absence)
+
+```{r}
+glmer.occ <- glmer(cbind(S_occ,S_unocc)~z_Max_width_cm+(1|Reef), family = binomial(link="logit"), data = social_occ)
+
+summary(glmer.occ) 
+
+r2(glmer.occ)
+
+```
+
+Interpretation: *Risor ruber* occupancy increased significantly with sponge size. In a binomial GLMM with reef as a random intercept, maximum sponge width had a positive effect on the probability of occupancy (β = 0.10 ± 0.02 SE, z = 4.42, P < 0.001), corresponding to roughly an 11% increase in the chances of occupation for each additional centimeter of sponge width. The model explained 11.9% of the variance via fixed effects (marginal R² = 0.119) and 16.9% when accounting for among-reef differences (conditional R² = 0.169).
+
+```{r}
+#Model checks and metrics
+check_model(glmer.occ) 
+check_overdispersion(glmer.occ)
+check_collinearity(glmer.occ)
+r2(glmer.occ) 
+
+sd_width <- sd(social_occ$Max_width_cm, na.rm = TRUE) #6.760123
+
+OR_1SD <- exp(0.6869) #1.987545
+OR_1cm <- exp(0.6869 / sd_width) #1.106952
+```
+
+Predictions from the standardized-width model are returned to centimeters before being plotted with the observed occupancy data. The threshold annotations follow the observed prediction grid.
+
+```{r}
+#Plot Model - Sponge occupancy vs sponge size + Raw data 
+occ.plot <- ggpredict(glmer.occ,
+                      terms = c("z_Max_width_cm [all]"),
+                      type = "random")
+occ_df <- as.data.frame(occ.plot)
+
+width_mean <- mean(social_occ$Max_width_cm, na.rm = TRUE)
+width_sd <- sd(social_occ$Max_width_cm, na.rm = TRUE)
+occ_df$x <- occ_df$x * width_sd + width_mean
+
+#Find the observed-range prediction-grid width closest to each probability.
+get_size_from_grid <- function(p, df = occ_df) {
+  df$x[which.min(abs(df$predicted - p))]
+}
+
+probs <- c(0.01, 0.5, 0.85)
+
+thresholds <- data.frame(
+  prob  = probs,
+  size  = sapply(probs, get_size_from_grid),
+  label = c("1%", "50%", "85%"))
+
+#Extracting empirical info
+min_present <- min(social_occ$Max_width_cm[social_occ$S_occ == 1], na.rm = TRUE)
+
+empirical_df <- data.frame(
+  size  = min_present,
+  label = "Min occupied")
+
+social_occ$S_occ_f <- factor(social_occ$S_occ,
+                             levels = c(0, 1),
+                             labels = c("Absent", "Present"))
+
+#Plotting the model
+pred.plot.occ <-
+  ggplot() +
+  geom_ribbon(data = occ_df,
+              aes(x = x, ymin = conf.low, ymax = conf.high),
+              alpha = 0.2) +
+  geom_line(data = occ_df,
+            aes(x = x, y = predicted),
+            size = 1) +
+  geom_point(data = social_occ,
+    aes(x = Max_width_cm, y = S_occ, colour = S_occ_f),
+    position = position_jitter(width = 0.3, height = 0),
+    alpha = 0.7,
+    size = 2)+
+  #adding 1%, 50%, 90% thresholds
+  geom_vline(data = thresholds,
+             aes(xintercept = size),
+             linetype = "dashed") +
+  geom_text(data = thresholds,
+            aes(x = size,y = 0.15, label = paste0(label, " (", round(size, 1), " cm)")),
+            angle = 90, vjust = -0.4, size = 3) +
+  #adding empirical min occupied sponge
+  geom_vline(data = empirical_df,
+             aes(xintercept = size), linetype = "solid") +
+  geom_text(data = empirical_df,
+            aes(x = size, y = 0.20, label = paste0("Min occupied (", round(size, 1), " cm)")),
+            angle = 90, vjust = -0.4, size = 3) +
+  # aesthetics
+  scale_colour_manual(values = c("Absent" = "grey60", "Present" = "black")) +
+  scale_y_continuous("Sponge occupancy",
+                     limits = c(0, 1),
+                     breaks = c(0, 0.25, 0.5, 0.75, 1)) +
+  scale_x_continuous("Maximum Sponge Width (cm)") +
+  theme_bw(base_size = 14) +
+  theme(legend.position = "none",
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(colour = "black"),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_blank())
+
+pred.plot.occ
+
+ggsave(file.path(output_dir, "Figure_1C.pdf"), width = 6, height = 5, units = "in")
+
+```
+
+```{r}
+#Complementary density plot
+social_occ %>%
+  ggplot(aes(x = factor(R_ruber), y = Max_width_cm, fill = factor(R_ruber)))+
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text = element_text(color = "black", size = 10),
+        axis.title = element_text(size = 15),
+        panel.background = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())+
+  stat_halfeye(
+    adjust = 0.4,
+    justification = 0,
+    .width = 0,
+    point_colour = NA
+  )  +
+  stat_dots(
+    side = "left",
+    justification = 1,
+    binwidth = 0.3)+
+  scale_fill_tableau("Tableau 20", name = NULL) +
+  labs(
+    x = "Sponge occupancy",
+    y = "Maximum Sponge Width (cm)",
+    fill = "Cylinders"
+  ) +
+  coord_flip()
+ggsave(file.path(output_dir, "Figure_1C.2.pdf"), width = 6, height = 5, units = "in")
+```
+Further refinement of Figure 1C was done in illustrator.
+
+## 2. Descriptive social and habitat summaries
+
+This section summarizes sampling by reef and sponge species, fish size, group size, sex, and social rank. These outputs document sample sizes and provide the descriptive results used in the text and supplementary figures.
+
+Computing some basic descriptive metrics with the main social dataset before further analyses:
+
+```{r}
+social.all <- read.csv(file.path(data_dir, "social_data_all_complete.csv"))
+
+head(social.all)
+```
+
+```{r}
+social.all <- social.all %>%
+  mutate(
+    Reef      = factor(Reef),
+    Sponge_id = factor(Sponge_id),
+    Rank_n    = as.integer(as.character(Rank)),
+    sex = case_when(
+      str_to_lower(is_male) %in% c("male","m","1","true","t")        ~ "male",
+      str_to_lower(is_male) %in% c("female","f","0","false","fa")    ~ "female",
+      TRUE                                                           ~ NA_character_
+    ) %>% factor(levels = c("female","male"))
+  )
+head(social.all)
+
+
+social.all <- social.all %>%
+  mutate(
+    z_Sponge_width_cm = scale(Sponge_width_cm),
+    z_TL_mm           = scale(TL_mm)
+  )
+
+
+```
+
+#### Sponge metrics
+
+```{r}
+sponges_per_site <- social.all %>%
+  distinct(Reef, Sponge_id) %>%      #each sponge counted once per reef
+  count(Reef, name = "n_sponges")
+
+sponges_per_site
+```
+
+```{r}
+sponges_summary <- sponges_per_site %>%
+  summarise(
+    mean_sponges = mean(n_sponges),
+    sd_sponges   = sd(n_sponges),
+    min_sponges  = min(n_sponges),
+    max_sponges  = max(n_sponges),
+    n_sites = n()
+  )
+
+sponges_summary
+```
+
+```{r}
+sponges_per_site_species <- social.all %>%
+  distinct(Reef, S_species, Sponge_id) %>%  # each sponge once per reef × species
+  count(Reef, S_species, name = "n_sponges")
+
+sponges_per_site_species
+```
+
+```{r}
+species_summary <- sponges_per_site_species %>%
+  group_by(S_species) %>%
+  summarise(
+    n_occupied = sum(n_sponges),   #total occupied sponges of that species
+    .groups = "drop"
+  ) %>%
+  mutate(
+    percent_occupied = 100 * n_occupied / sum(n_occupied)
+  )
+species_summary <- species_summary %>%
+  arrange(desc(percent_occupied))
+
+```
+
+#### Fish total length summaries
+
+```{r}
+#Overall
+tl_overall <- social.all %>%
+  summarise(
+    n          = sum(!is.na(TL_mm)),
+    mean_TL    = mean(TL_mm, na.rm = TRUE),
+    sd_TL      = sd(TL_mm, na.rm = TRUE),
+    min_TL     = min(TL_mm, na.rm = TRUE),
+    max_TL     = max(TL_mm, na.rm = TRUE)
+  )
+
+tl_overall
+```
+
+```{r}
+#By sex
+tl_by_sex <- social.all %>%
+  filter(!is.na(sex)) %>%
+  group_by(sex) %>%
+  summarise(
+    n          = n(),
+    mean_TL    = mean(TL_mm, na.rm = TRUE),
+    sd_TL      = sd(TL_mm, na.rm = TRUE),
+    min_TL     = min(TL_mm, na.rm = TRUE),
+    max_TL     = max(TL_mm, na.rm = TRUE),
+    .groups    = "drop"
+  )
+
+tl_by_sex
+```
+
+#### Group size distribution
+
+```{r}
+group_df <- social.all %>%
+  distinct(Sponge_id, Reef, Group_size)
+
+group_size_summary <- group_df %>%
+  summarise(
+    n_groups      = n(),
+    median_gsize    = median(Group_size, na.rm = TRUE),
+    min_gsize     = min(Group_size, na.rm = TRUE),
+    max_gsize     = max(Group_size, na.rm = TRUE)
+  )
+
+group_size_summary
+```
+
+```{r}
+group_size_freq <- group_df %>%
+  count(Group_size, name = "n_groups") %>%
+  arrange(Group_size)
+
+group_size_freq
+```
+
+#### Rank distribution
+
+```{r}
+rank_counts <- social.all %>%
+  count(Rank_n, name = "n_ind") %>%
+  arrange(Rank_n)
+
+rank_counts
+```
+
+#### Sex ratio overall and by rank
+
+```{r}
+#Overall sex ratio
+sex_overall <- social.all%>%
+  filter(!is.na(sex)) %>%
+  count(sex, name = "n") %>%
+  mutate(
+    prop = n / sum(n)
+  )
+
+sex_overall
+```
+
+```{r}
+# Sex by rank (for rank × sex figure and text)
+sex_by_rank <- social.all %>%
+  filter(!is.na(sex), !is.na(Rank_n)) %>%
+  count(Rank_n, sex, name = "n") %>%
+  group_by(Rank_n) %>%
+  mutate(
+    total_rank = sum(n),
+    prop       = n / total_rank
+  ) %>%
+  ungroup() %>%
+  arrange(Rank_n, sex)
+
+sex_by_rank
+```
+
+#### Occupied sponges by reef and host species 
+
+Occupied sponges are counted by reef and host species. The expected output is Supplementary Figure S5.
+
+```{r}
+
+sponge <- social.all %>%           # or your full social dataframe
+  group_by(Sponge_id, S_species, Reef) %>%
+  summarise(
+    Group_size      = n(),
+    Sponge_width_cm = first(Sponge_width_cm),
+    .groups = "drop"
+  ) #106 sponges
+
+
+```
+
+```{r}
+counts <- sponge %>%
+  count(Reef, S_species, name = "freq")
+
+counts <- counts %>%
+  group_by(Reef) %>%
+  mutate(total_site = sum(freq)) %>%
+  ungroup() %>%
+  mutate(Reef = reorder(Reef, total_site))
+
+counts
+```
+
+```{r}
+ggplot(counts, aes(x = Reef, y = freq, fill = S_species)) +
+  geom_col(position = "dodge", alpha = 0.9) +
+  scale_fill_manual(values = c(
+    "Ircinia campana"    = "rosybrown",
+    "Ircinia felix"      = "saddlebrown",
+    "Ircinia strobilina" = "grey28",
+    "Ircinia ruetzleri"  = "peachpuff3" 
+  )) +
+  labs(
+    x = "Sampling reef",
+    y = "Frequency of Occupation by Risor ruber",
+    fill = "Host sponge"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "top") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(output_dir, "Figure_S5.pdf"), width = 7, height = 5, units = "in")
+
+```
+
+## 3. Social organization
+
+This section quantifies adjacent-rank size ratios and tests whether group-size structure changes with group size and habitat characteristics. It produces the group-structure summaries and figures used to describe size-based social organization.
+
+### Adjacent-rank size ratios
+
+For each social group, the total length of a subordinate is divided by the length of the individual immediately above it in rank. Ratios closer to one indicate more similar body sizes, whereas smaller ratios indicate a steeper size hierarchy. The expected output is Supplementary Figure S8.
+
+```{r}
+#orderining individuals within each group
+df_ratios<- social.all %>%
+  mutate(Rank_n = as.numeric(as.character(Rank)))%>%
+  arrange(Sponge_id, Rank_n)
+
+# add "next" fish in rank and compute adjacent size ratio
+df_ratios <- df_ratios %>%
+  group_by(Sponge_id) %>%
+  arrange(Rank_n, .by_group = TRUE) %>%
+  mutate(
+    next_TL  = lead(TL_mm),
+    next_rank = lead(Rank_n),
+    ratio    = next_TL / TL_mm,
+    Ratio_ID = ifelse(
+      is.na(next_TL),
+      NA_character_,
+      sprintf("R%02d/R%02d", next_rank, Rank_n)
+    )
+  ) %>%
+  ungroup()
+
+#summarize to group-level means (Group.ratio)
+group_ratio_df <- df_ratios %>%
+  group_by(Sponge_id, Reef) %>%                  
+  summarise(
+    Group.size  = n(),                            
+    Group.ratio = if (sum(!is.na(ratio)) > 0) {
+      mean(ratio, na.rm = TRUE)                 
+    } else {
+      NA_real_                                
+    },
+    .groups = "drop"
+  )
+
+
+#transforming to wide format
+ratio_wide <- df_ratios %>%
+  filter(!is.na(ratio)) %>%                
+  dplyr::select(Sponge_id, Ratio_ID, ratio) %>%
+  pivot_wider(
+    names_from  = Ratio_ID,
+    values_from = ratio
+  )
+
+summary_wide <- group_ratio_df %>%
+  left_join(ratio_wide, by = "Sponge_id")
+
+
+#group ratio - long format
+ratio_long_df <- df_ratios %>%
+  filter(!is.na(ratio)) %>%
+  transmute(
+    Sponge_id,
+    Reef,
+    Group.size = ave(Rank_n, Sponge_id, FUN = length), 
+    Ratio_ID,
+    Ratio_long = ratio
+  )
+
+ratio_long_df <- df_ratios %>%
+  mutate(Rank_n = as.numeric(as.character(Rank))) %>%
+  arrange(Sponge_id, Rank_n) %>%
+  group_by(Sponge_id) %>%
+  mutate(
+    next_TL   = dplyr::lead(TL_mm),
+    next_rank = dplyr::lead(Rank_n),
+    Ratio_long = next_TL / TL_mm,
+    Ratio_ID   = ifelse(
+      is.na(next_TL),
+      NA_character_,
+      sprintf("R%02d/R%02d", next_rank, Rank_n)
+    )
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(Ratio_long), !is.na(Ratio_ID))
+
+```
+
+```{r}
+#obtain ratio summary of each individual
+ratio_summary <- ratio_long_df %>%
+  group_by(Ratio_ID) %>%
+  summarise(
+    mean_ratio = mean(Ratio_long, na.rm = TRUE),
+    sd_ratio   = sd(Ratio_long, na.rm = TRUE),
+    se_ratio   = sd_ratio / sqrt(n()),
+    n          = n(),
+    .groups    = "drop"
+  ) %>%
+  mutate(Ratio_ID = factor(Ratio_ID, levels = sort(unique(Ratio_ID))))
+
+ratio_summary
+```
+
+The following plot retains rank pairs with sufficient replication to calculate a standard error.
+
+```{r}
+# reorder rank pairs in natural order
+summary_ratios <- ratio_summary %>%
+  mutate(Ratio_ID = factor(Ratio_ID, levels = Ratio_ID))%>%
+  filter(!is.na(se_ratio))
+
+ratio_long_clean <- ratio_long_df %>%
+  filter(Ratio_ID %in% summary_ratios$Ratio_ID)
+
+ggplot() +
+  # Raw ratios (transparent points)
+  geom_jitter(data = ratio_long_clean,
+              aes(x = Ratio_ID, y = ratio, color = Reef),
+              width = 0.1, height = 0,
+              alpha = 0.4, size = 2) +
+  
+  # Means + SE
+  geom_point(data = summary_ratios,
+             aes(x = Ratio_ID, y = mean_ratio),
+             size = 4, color = "black") +
+  
+  geom_errorbar(data = summary_ratios,
+                aes(x = Ratio_ID,
+                    ymin = mean_ratio - se_ratio,
+                    ymax = mean_ratio + se_ratio),
+                width = 0.1, linewidth = 0.7) +
+  scale_color_manual(values = c("CUR"="#008B8B", "GOL" = "#DAA520", "GRU" = "#6B8E23", "LON" = "#000080"))+
+  labs(x = "Rank pair",
+       y = "Mean Size Ratio (+/- SE)") +
+  
+  theme_classic(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(output_dir, "Figure_S8.pdf"), width = 7, height = 5, units = "in")
+
+```
+
+### Group size and hierarchy steepness
+
+The beta mixed model tests whether adjacent-rank size ratios change with group size while accounting for reef. The model evaluates whether larger groups have steeper or flatter size hierarchies.
+
+Determine how steep or shallow the size hierarchy is
+Mean ratio close to 1 - means individuals are very similar in size (weak hierarchy)
+Mean ratio lower than that - individuals differ strongly - steep hierarchy
+
+This number is a shape descriptor of the dominance/size structure of a group
+
+Model - when groups get larger, are size differences between rank positions amplified or compressed? Does adding more individuals reinforce the hierarchy, or dilute it?
+
+H1: Larger groups -> steeper hierarchy (lower ratios)
+This would suggest strong competition within confined space; bigger individual monopolize resources; subordinate individuals get smaller relative to dominants
+
+H2: Larger groups -> flatter hierarchy (higher ratios)
+This would suggest that groups tolerate similarly sized individuals; size-based dominance is relaxed; the resource (sponge) provided enough microhabitats. 
+This is probably the most plausible scenario for microhabitat-limited species
+
+
+```{r}
+#Model - does the size structure of groups depend on how large the group is?
+#Do bigger groups have more competitive, more size-structured hierarchies?
+
+m_gratio = glmmTMB(Group.ratio ~ Group.size + (1|Reef), family = beta_family(link = "logit"), data=summary_wide)
+
+summary(m_gratio)
+
+```
+
+```{r}
+#Model checks
+check_model(m_gratio)
+check_residuals(m_gratio) #uniformly distributed
+model_performance(m_gratio)
+```
+
+#### Visualizing social structure across group sizes
+
+```{r}
+social_data<- social.all
+
+#number of R. ruber located within one sponge ranged from 1-14 individuals 
+#N of each group size: 1=50, 2=30, 3=11, 4=7, 5=3, 7=2, 10=1, 14=1). 
+head(social_data)
+
+str(social_data)
+
+#change string
+social_data$Group_size <- as.integer(social_data$Group_size)
+social_data$ind_id <- as.factor(social_data$ind_id)
+social_data$Rank <- as.factor(social_data$Rank)
+social_data$Sponge_id <- as.factor(social_data$Sponge_id)
+social_data$S_species <- as.factor(social_data$S_species)
+social_data$Sponge_id <- as.factor(social_data$Sponge_id)
+social_data$S_colour <- as.factor(social_data$S_colour)
+social_data$Reef <- as.factor(social_data$Reef)
+
+#summarize data
+sumdat <- social_data %>%
+  group_by(Rank, Group_size) %>%
+  summarise(
+    meanTL = mean(TL_mm, na.rm = TRUE),
+    seTL   = sd(TL_mm, na.rm = TRUE) / sqrt(n()),
+    .groups = "drop"
+  ) %>%
+  mutate(Rank = as.integer(as.character(Rank)))
+
+keep <- c(1,2,3,4,5,7,10,14)
+
+sumdat <- sumdat %>%
+  filter(Group_size %in% keep)
+
+```
+
+```{r}
+#Organize sclaes
+ymin <- min(sumdat$meanTL - sumdat$seTL, na.rm = TRUE)
+ymax <- max(sumdat$meanTL + sumdat$seTL, na.rm = TRUE)
+
+#base theme
+base_theme <- theme_bw() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+#individual panels
+p1 <- ggplot(filter(sumdat, Group_size==1),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,4), breaks=1:4) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  labs(y="Mean TL") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+p2 <- ggplot(filter(sumdat, Group_size==2),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,4), breaks=1:4) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p3 <- ggplot(filter(sumdat, Group_size==3),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,4), breaks=1:4) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p4 <- ggplot(filter(sumdat, Group_size==4),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,4), breaks=1:4) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p5 <- ggplot(filter(sumdat, Group_size==5),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,5), breaks=1:5) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p7 <- ggplot(filter(sumdat, Group_size==7),
+             aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,7), breaks=1:7) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p10 <- ggplot(filter(sumdat, Group_size==10),
+              aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,10), breaks=1:10) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+p14 <- ggplot(filter(sumdat, Group_size==14),
+              aes(Rank, meanTL)) +
+  geom_line(color="#34446e") +
+  geom_point(color="#34446e", size=2) +
+  geom_linerange(aes(ymin=meanTL-seTL, ymax=meanTL+seTL),
+                 color="#34446e") +
+  scale_x_continuous(limits=c(1,14), breaks=1:14) +
+  scale_y_continuous(limits=c(floor(ymin), ceiling(ymax))) +
+  base_theme
+
+#combine with patchwork
+pall<- (p1 | p2 | p3 | p4 | p5 | p7 | p10 | p14) +
+  plot_layout(widths = c(3, 3, 3, 3, 3, 5, 5, 8))
+
+pall
+
+ggsave(file.path(output_dir, "Figure_3A.pdf"), plot = pall, width = 12, height = 4, dpi = 600)
+```
+Further refinement of Figure 3A was done in illustrator.
+
+### Piecewise structural equation model
+
+The piecewise SEM evaluates the proposed path from sponge width to dominant size, sequential subordinate sizes, and group size. The section reports component-model summaries, global fit, and the directed graph.
+
+```{r}
+#Organizing df for SEM model
+sem_df <- social.all %>%
+  mutate(Rank_n  = as.integer(Rank),
+         rank_lab = paste0("R", Rank_n, "_TL")) %>%
+  dplyr::filter(Rank_n %in% 1:3) %>%
+  dplyr::select(Sponge_id,Reef, S_width_cm = Sponge_width_cm, Group_size, rank_lab, TL_mm) %>%
+  pivot_wider(names_from  = rank_lab, values_from = TL_mm) %>%
+  filter(!is.na(R1_TL), !is.na(R2_TL), !is.na(R3_TL))
+
+```
+
+```{r}
+#tidy data and check distribution of target variable
+sem_df <- sem_df %>%
+  mutate(log_width = log(S_width_cm),
+         Reef = factor(Reef))
+
+#hist(social.data.clean$Group_size) #poisson distribution
+```
+
+```{r, message= FALSE}
+#SEM - Piecewise structural equation modeling
+#unites structural equations in a single model
+
+sem_mod <- psem(
+  lmer(R1_TL ~ log_width + (1|Reef), data = sem_df),
+  lmer(R2_TL ~ R1_TL     + (1|Reef), data = sem_df),
+  lmer(R3_TL ~ R2_TL     + (1|Reef), data = sem_df),
+  glmer(Group_size ~ log_width + R1_TL + (1|Reef),
+        family = poisson, data = sem_df)
+)
+
+sem_output <- summary(sem_mod)
+
+```
+
+```{r}
+plot(sem_mod) #the actual paper figure (Figure 3B) was produced on illustrator.
+```
+
+Interpretation: 
+
+SEM - Network of linked responses, including direct and indirect effects.
+The relationships are hierarchical / causal (rank 1 → rank 2 → rank 3), not just correlations.
+The global goodness-of-fit tests. High P-values (> 0.05) mean: The hypothesized network of causal paths is not rejected by the data – it’s statistically consistent with the observed covariances.
+ 
+### Host species and group size
+
+The following negative-binomial models test whether host species adds explanatory value beyond sponge width for variation in group size. Only host species represented by at least 10 sponges are retained. Model comparison and the species-specific prediction curves provide the results shown in Supplementary Figure S9.
+
+```{r}
+#Restricting to only abundant species (>10) before modeling 
+
+sponge <- social.all %>%          
+  group_by(Sponge_id, S_species, Reef) %>%
+  summarise(
+    Group_size      = n(),
+    Sponge_width_cm = first(Sponge_width_cm),
+    .groups = "drop"
+  ) #106 sponges
+
+
+species_counts <- table(sponge$S_species)
+
+common_species <- names(species_counts[species_counts >= 10])
+
+common_species
+```
+
+```{r}
+groups_main <- sponge %>%
+  filter(S_species %in% common_species)
+
+m_mix_width_main <- glmmTMB(
+  Group_size ~ scale(Sponge_width_cm) + (1 | Reef),
+  family = nbinom2,
+  data   = groups_main
+)
+
+m_mix_main <- glmmTMB(
+  Group_size ~ scale(Sponge_width_cm) + S_species + (1 | Reef),
+  family = nbinom2,
+  data   = groups_main
+)
+
+AIC(m_mix_width_main, m_mix_main)
+
+```
+
+```{r}
+summary(m_mix_main)
+```
+
+Group size increased strongly with sponge width, and host identity accounted for additional variation beyond this effect (negative binomial GLMM, three common host species). For sponges of the same width, groups in I. strobilina were substantially larger than those in I. campana (≈ exp(0.81) ≈ 2.2× larger), whereas groups in I. felix did not differ significantly from I. campana.
+
+```{r}
+pred_group <- ggpredict(m_mix_main, terms = c("Sponge_width_cm [all]", "S_species"))
+```
+
+```{r}
+ggplot() +
+  geom_ribbon(
+    data = pred_group,
+    aes(x = x, ymin = conf.low, ymax = conf.high, fill = group),
+    alpha = 0.15
+  ) +
+  geom_line(
+    data = pred_group,
+    aes(x = x, y = predicted, colour = group),
+    linewidth = 1.1
+  ) +
+  geom_point(
+    data = groups_main,
+    aes(x = Sponge_width_cm, y = Group_size, colour = S_species),
+    size = 2, alpha = 0.7
+  ) +
+  scale_color_manual(values = c(
+    "Ircinia campana"    = "rosybrown",
+    "Ircinia felix"      = "saddlebrown",
+    "Ircinia strobilina" = "grey28"
+  )) +
+  scale_fill_manual(values = c(
+    "Ircinia campana"    = "rosybrown",
+    "Ircinia felix"      = "saddlebrown",
+    "Ircinia strobilina" = "grey28"
+  ), guide = "none") +
+  labs(
+    x = "Sponge width (cm)",
+    y = "Predicted group size",
+    colour = "Host sponge"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "top")
+
+ggsave(file.path(output_dir, "Figure_S9.pdf"), width = 7, height = 5, units = "in")
+
+```
+
+## 4. Life history
+
+This section evaluates sex and rank patterns, reproductive status and egg number, and the relationship between otolith-derived age and body size.
+
+### Sexual structure - Figure 4A and 4B
+
+```{r}
+#social data
+d <- social.all %>%
+  mutate(
+    Reef      = factor(Reef),
+    Sponge_id = factor(Sponge_id),
+    Rank      = factor(Rank),
+    # robust sex mapping (edit levels if needed)
+    sex = case_when(
+      str_to_lower(is_male) %in% c("male","m","1","true","t") ~ "male",
+      str_to_lower(is_male) %in% c("female","f","0","false","fa") ~ "female",
+      TRUE ~ NA_character_
+    ) %>% factor(levels = c("female","male")),
+    # convenience scalers
+    z_width = scale(Sponge_width_cm)[,1],
+    z_grp   = scale(Group_size)[,1],
+    z_TL    = scale(TL_mm)[,1]
+  )
+
+d.alt<- d%>%
+  filter(!is_male == "na") #208 individuals left
+
+summary(d)
+table(d$Rank, useNA="ifany")
+table(d$sex, useNA="ifany")
+```
+
+```{r}
+sex_str<- ggplot(d.alt, aes(x = TL_mm, fill = sex)) +
+  geom_histogram(position = "dodge", bins = 15, color = "white") +
+  scale_fill_manual(values = c(female = "#950952", male = "#104547")) +
+  labs(x = "Total length (mm)",
+       y = "Number of Individuals",
+       fill = "Sex") +
+  theme_classic()+
+  theme(legend.position = "top")
+
+sex_str
+
+ggsave(file.path(output_dir, "Figure_4A.pdf"), plot = sex_str, width = 5, height = 4, units = "in")
+```
+
+How do social rank, sex, and habitat size together shape individual body size?
+
+```{r}
+#count individuals per rank x sex
+sex_rank_df <- d.alt %>%
+  mutate(
+    Rank_n = as.numeric(as.character(Rank)),
+    sex    = tolower(sex)
+  ) %>%
+  filter(Rank_n %in% 1:7, sex %in% c("male","female")) %>%
+  count(Rank_n, sex, name = "n") %>%
+  group_by(sex) %>%                           
+  mutate(
+    total_sex = sum(n),
+    prop_sex  = n / total_sex
+  ) %>%
+  ungroup()
+
+sex_rank_df
+```
+
+```{r}
+#side-by-side bars per rank
+sex_prop<-ggplot(sex_rank_df, aes(x = Rank_n, y = prop_sex, fill = sex)) +
+  geom_col(position = position_dodge(width = 0.85), width = 0.8, color = "white") +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     limits = c(0, NA), expand = expansion(mult = c(0, 0.05))) +
+  scale_x_continuous(breaks = 1:7) +
+  scale_fill_manual(values = c("female" = "#950952", "male" = "#104547"),
+                    name = "Sex") +
+  labs(
+    x = "Social rank",
+    y = "Proportion of individuals within sex"
+  ) +
+  theme_classic(base_size = 13)+
+  theme(legend.position = "none")
+
+sex_prop
+
+ggsave(file.path(output_dir, "Figure_4B.pdf"), plot = sex_prop, width = 6, height = 4, units = "in")
+
+```
+
+### Sex, social rank, and body size
+
+This linear mixed model tests whether males and females differ in body size at comparable ranks while controlling for sponge width and repeated observations within sponges (Supplementary Figure S10).
+
+```{r}
+d.alt <- d.alt %>%
+  mutate(Rank_n = as.numeric(as.character(Rank)))
+
+d.alt.f <- d.alt %>%
+  filter(Rank_n <= 7)
+
+m_add <- lmer(z_TL ~ Rank + sex + z_width + (1|Sponge_id), data = d.alt.f, REML = TRUE)
+summary(m_add)
+
+```
+
+Interpreation:
+
+Basic what is shown by the SEM
+- There’s a steep size hierarchy: by Rank 3, individuals are ~3 TL units smaller than Rank 1 (controlling for width, sex).
+- Males are larger than females across ranks; the shape of the hierarchy doesn’t differ by sex (interactions unsupported).
+- Habitat size scales body size for everyone.
+
+```{r}
+#SD of raw width (cm): this defines what "1 SD" means
+sd_width <- sd(d.alt.f$Sponge_width_cm, na.rm = TRUE)
+
+#Pull the standardized slope from the model directly
+b_z <- fixef(m_add)[["z_width"]]
+
+#Odds ratios
+OR_1SD <- exp(b_z)                 # per 1 SD increase in width
+OR_1cm <- exp(b_z / sd_width)      # equivalent OR per 1 cm increase
+
+sd_width
+OR_1SD
+OR_1cm
+```
+
+```{r}
+#Model-based predictions for every Rank × sex combo
+emm_all <- emmeans(
+  m_add,
+  ~ Rank | sex,
+  at = list(z_width = 0),   
+  type = "response"
+) %>% as.data.frame()
+
+#Which combos were actually observed?
+cells <- d.alt.f %>% count(Rank, sex, name = "n")
+
+plot_df <- emm_all %>%
+  left_join(cells, by = c("Rank","sex")) %>%
+  mutate(
+    obs = ifelse(is.na(n) | n == 0, "unobserved", "observed"),
+    rank_num = as.numeric(as.character(Rank))
+  )
+
+```
+
+```{r}
+#plotting model predictions
+pd <- position_dodge(width = 0.35)
+
+sz_rank<- ggplot(plot_df, aes(x = rank_num, y = emmean, color = sex)) +
+  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL),
+                width = 0, position = pd, linewidth = 1) +
+  geom_point(aes(shape = obs), position = pd, size = 4, stroke = 2, alpha = 0.7) +
+  scale_shape_manual(values = c(observed = 16, unobserved = 1)) +  # solid vs hollow
+  scale_color_manual(values = c(female = "#950952", male = "#104547")) +
+  scale_x_continuous(breaks = sort(unique(plot_df$rank_num))) +
+  labs(x = "Social Rank", y = "Predicted Total Length (mm)", color = "Sex") +
+  theme_classic(base_size = 13)+
+  theme(legend.position = "top")
+
+sz_rank
+
+ggsave(file.path(output_dir, "Figure_S10.pdf"), plot = sz_rank, width = 5, height = 4, units = "in")
+
+```
+
+### Reproductive status and egg production
+
+Female body size and sponge width are evaluated as predictors of egg presence and egg number (Figures S11, 4B 4C)
+
+```{r}
+#keeping only females
+fem<- social.all %>%
+  filter(is_male == 0)
+fem$Rank<- as.factor(fem$Rank)
+```
+
+```{r}
+#organizing dataset
+fem<- fem %>%
+  mutate(
+    has_eggs = factor(eggs, levels = c(0,1),
+                      labels = c("no_eggs", "eggs")))
+fem_egg<- fem %>%
+  filter(has_eggs == "eggs")
+
+sum<- fem_egg%>%
+  summarize(
+    eggs_avg = mean(egg_count)) #obtaining counts for eggs
+
+fem_per<- fem %>%
+  count(has_eggs) %>%
+  mutate(percent = 100 * n / sum(n))
+
+```
+
+#### Gravid females across social ranks
+
+Female total length is plotted by social rank and colored by egg status. This descriptive plot reproduces Supplementary Figure S11 and shows that gravid females are not restricted to rank 1.
+
+```{r}
+egg_status<- ggplot(fem, aes(x = Rank, y = TL_mm, color = has_eggs)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("#9A6D38","#F4D35E")) +
+  labs(x = "Rank",
+       y = "Total length (mm)",
+       color = "Eggs") +
+  theme_classic()
+
+egg_status
+
+ggsave(file.path(output_dir, "Figure_S11.pdf"), plot = egg_status, width = 5, height = 4, units = "in")
+
+```
+
+Are females carrying eggs significantly larger?
+
+- Does female body size predict reproduction?
+
+- Does habitat size (sponge size) further predict reproduction, beyond body size?
+
+It lets you conclude whether habitat capacity influences whether females reproduce, not just how much they produce.
+
+Bigger sponges could:
+
+- allow more food / better flow → higher condition → more eggs, or
+
+- simply allow more fish but not change per-female reproduction.
+
+```{r}
+#modeling the presence of eggs as a function of body size and sponge size
+m_eggs_presence <- glmmTMB(
+  has_eggs ~ scale(TL_mm) + scale(Sponge_width_cm) + (1 | Sponge_id),
+  family = binomial,
+  data = fem
+)
+
+summary(m_eggs_presence)
+
+#sd(fem$TL_mm, na.rm = TRUE)
+```
+
+Only female body size has a direct effect on the presence of eggs.
+
+```{r}
+#Visualizing eggs status - rainclound plot 
+ggplot(fem, aes(x = has_eggs, y = TL_mm, fill = has_eggs)) +
+  stat_halfeye(
+    adjust = .6,
+    width = .5,
+    .width = 0,
+    justification = -.2,
+    alpha = .6,
+    color = NA
+  ) +
+  geom_boxplot(
+    width = .2,
+    outlier.shape = NA,
+    alpha = .7
+  ) +
+  geom_jitter(
+    aes(color = has_eggs),
+    width = .08,
+    size = 1.4,
+    alpha = .8
+  ) +
+  
+  scale_fill_manual(values = c("grey40","#F4D35E")) +
+  scale_color_manual(values = c("grey40","#F4D35E")) +
+  
+  labs(y = "Total length (mm)") +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "none", axis.title.x = element_blank())
+
+ggsave(file.path(output_dir, "Figure_4C.pdf"), width = 5, height = 4, units = "in")
+```
+
+Females carrying eggs were significantly larger and sponge size has no direct effect.
+
+- But are the bigger females having more eggs (egg count)?
+
+```{r}
+#modeling egg count as a function of body size and sponge size
+#count data - overdisperse - negative binomial
+m_egg_count <- glmmTMB(
+  egg_count ~ scale(TL_mm) + scale(Sponge_width_cm) + (1 | Sponge_id),
+  family = nbinom2,
+  data   = fem_egg)
+
+summary(m_egg_count)
+
+#sd(fem$TL_mm[fem$has_eggs == "eggs"], na.rm = TRUE)
+```
+
+```{r}
+pred_egg <- ggpredict(m_egg_count, terms = "TL_mm [all]")
+```
+
+```{r}
+egg_count<- ggplot() +
+  geom_ribbon(
+    data = pred_egg,
+    aes(x = x, ymin = conf.low, ymax = conf.high),
+    fill = "#F4D35E",
+    alpha = 0.2
+  ) +
+  geom_line(
+    data = pred_egg,
+    aes(x = x, y = predicted),
+    linewidth = 1
+  ) +
+  geom_point(
+    data = fem_egg,
+    aes(x = TL_mm, y = egg_count),
+    colour = "#F4D35E",
+    size = 4,
+    alpha = 0.85
+  ) +
+  labs(
+    x = "Total length (mm)",
+    y = "Egg count"
+  ) +
+  theme_classic(base_size = 13)
+
+egg_count
+
+ggsave(file.path(output_dir, "Figure_4D.pdf"), plot = egg_count, width = 5, height = 4, units = "in")
+```
+
+### Age structure and body size
+
+The otolith-aged subset is used to summarize age distributions and test whether age, sex, dominant status, group size, and sponge width explain body size.
+
+```{r}
+oto<- social.all %>%
+  filter(!is.na(age)) #31 individuals
+
+summary(oto$age)
+head(oto)
+```
+
+```{r}
+#organizing otolith data 
+oto <- transform(oto,
+  Age_c = scale(age, center = TRUE, scale = FALSE),
+  Group_size_c = scale(Group_size, center = TRUE, scale = FALSE),
+  Sponge_c = scale(Sponge_width_cm, center = TRUE, scale = FALSE)
+)
+
+oto<- oto %>%
+  mutate(Rank_num = as.numeric(as.character(Rank)))
+
+oto<- oto %>%
+    mutate(
+    Rank1 = ifelse(Rank_num == 1, "Rank1", "NotRank1"),
+    Rank1 = factor(Rank1, levels = c("NotRank1", "Rank1")))
+  
+oto<- oto %>%
+  mutate(
+    sex = case_when(
+      str_to_lower(is_male) %in% c("male","m","1","true","t") ~ "male",
+      str_to_lower(is_male) %in% c("female","f","0","false","fa") ~ "female",
+      TRUE ~ NA_character_
+    ) %>% factor(levels = c("female","male")))
+
+
+```
+
+```{r}
+#Obtaining basic metrics
+
+age_summary <- oto %>%
+  summarise(
+    n_age      = n(),
+    mean_age   = mean(age, na.rm = TRUE),
+    sd_age     = sd(age, na.rm = TRUE),
+    min_age    = min(age, na.rm = TRUE),
+    max_age    = max(age, na.rm = TRUE),
+    mean_TL    = mean(TL_mm, na.rm = TRUE),
+    sd_TL      = sd(TL_mm, na.rm = TRUE),
+    min_TL     = min(TL_mm, na.rm = TRUE),
+    max_TL     = max(TL_mm, na.rm = TRUE)
+  )
+age_summary
+```
+
+```{r}
+age_by_sex <- oto %>%
+  group_by(sex) %>%
+  summarise(
+    n          = n(),
+    mean_age   = mean(age, na.rm = TRUE),
+    sd_age     = sd(age, na.rm = TRUE),
+    mean_TL    = mean(TL_mm, na.rm = TRUE),
+    sd_TL      = sd(TL_mm, na.rm = TRUE),
+    .groups = "drop"
+  )
+age_by_sex
+
+```
+
+```{r}
+age_by_rank1 <- oto %>%
+  group_by(Rank) %>%
+  summarise(
+    n          = n(),
+    mean_age   = mean(age, na.rm = TRUE),
+    sd_age     = sd(age, na.rm = TRUE),
+    mean_TL    = mean(TL_mm, na.rm = TRUE),
+    sd_TL      = sd(TL_mm, na.rm = TRUE),
+    .groups = "drop"
+  )
+age_by_rank1
+
+```
+
+```{r}
+#Obtaing age distribution and frequency
+d_oto <- oto %>%
+  dplyr::rename(Age_days = age)
+
+#Pivot to long format
+df_long <- d_oto %>%
+  pivot_longer(
+    cols = c(Age_days, TL_mm),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Measure = recode(Measure,
+                     Age_days = "Age (days)",
+                     tL_mm = "Total length (mm)"),
+    Units = if_else(Measure == "Age (days)", "days", "mm")
+  )
+
+#Calculate means for dashed line + label
+means <- df_long %>%
+  group_by(Measure, Units) %>%
+  summarise(m = mean(Value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(lbl = sprintf("Mean: %.1f %s", m, Units))
+
+#Visualizing age distribution
+ggplot(df_long, aes(x = Value)) +
+  geom_histogram(fill = "grey", color = "white", bins = 15) +
+  facet_wrap(~Measure, scales = "free_x", nrow = 1, strip.position = "bottom") +
+  geom_vline(data = means, aes(xintercept = m),
+             linetype = "dashed", linewidth = 0.7) +
+  geom_text(
+    data = means,
+    aes(x = m, y = Inf, label = lbl),
+    vjust = 1.2, size = 3.5, fontface = "bold"
+  ) +
+  labs(x = NULL, y = "Frequency") +
+  theme_classic(base_size = 12) +
+  theme(
+    #strip.placement = "outside",       # move strips outside plot panels
+    #strip.position = "bottom",         # put them below the x-axis
+    strip.text = element_text(face = "bold"),
+    strip.background = element_blank()
+  )
+ggsave(file.path(output_dir, "Figure_5A.pdf"), width = 5, height = 4, units = "in")
+```
+
+#### Do dominant individuals exhibit distinct age or size characteristics? (Figure 5B)
+
+```{r}
+# The corresponding mixed models had a zero Sponge_id random-effect variance
+# (singular fits). Ordinary linear models therefore retain the supported
+# fixed-effect hypotheses without interpreting an unsupported random effect.
+fm0 <- lm(TL_mm ~ Age_c + Group_size + Sponge_c, data = oto)
+fm1 <- lm(TL_mm ~ Age_c + sex + Rank1 + Group_size + Sponge_c, data = oto)
+fm2 <- lm(TL_mm ~ Age_c * Rank1 + sex + Group_size + Sponge_c, data = oto)
+fm3 <- lm(TL_mm ~ Age_c * sex + Rank1 + Group_size + Sponge_c, data = oto)
+fm4 <- lm(TL_mm ~ Age_c * sex + Age_c * Rank1 + Group_size + Sponge_c, data = oto)
+fm5 <- lm(TL_mm ~ Age_c * sex * Rank1 + Group_size + Sponge_c, data = oto)
+
+aictab(list(fm0,fm1,fm2,fm3,fm4,fm5),
+       modnames = c("Age","Age+sex+rank","Age*rank","Age*sex","Age*sex+Age*rank","3way"))
+```
+
+```{r}
+summary(fm1) #best-supported non-singular model
+```
+
+```{r}
+#Organize predicted data for plotting
+pred_age <- ggpredict(fm1, terms = "Age_c [all]")
+
+age_mean <- mean(oto$age, na.rm = TRUE) 
+pred_age$age <- pred_age$x + age_mean
+
+oto_age<- ggplot(oto, aes(x = age, y = TL_mm)) +
+  geom_ribbon(
+    data = pred_age,
+    aes(x = age, ymin = conf.low, ymax = conf.high),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  
+  geom_line(
+    data = pred_age,
+    aes(x = age, y = predicted),
+    inherit.aes = FALSE,
+    linewidth = 1
+  ) +
+  
+  geom_point(
+    aes(color = sex, shape = Rank1),
+    size = 4,
+    alpha = 0.7
+  ) +
+  
+  scale_color_manual(values = c(female = "#950952", male = "#104547")) +
+  scale_shape_manual(values = c(NotRank1 = 16, Rank1 = 18)) +
+  
+  labs(
+    x = "Age (days)",
+    y = "Total length (mm)",
+    color = "Sex",
+    shape = "Rank"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "top")
+
+oto_age
+
+ggsave(file.path(output_dir, "Figure_5B.pdf"), width = 5, height = 4, units = "in")
+
+```
+
+#### Does *Risor ruber* age vary across sampled sponges?
+
+Age, sex, and dominant status are displayed for each of the four sponges represented in the otolith subset. The expected output is Supplementary Figure S12; unidentified sex is retained as `NA` in the figure.
+
+```{r}
+summ_sponge<-oto %>%
+  group_by(Sponge_id) %>%
+  summarise(
+    n_total   = n(),
+    n_female  = sum(sex == "female", na.rm = TRUE),
+    n_male    = sum(sex == "male", na.rm = TRUE),
+    age_min   = min(age, na.rm = TRUE),
+    age_max   = max(age, na.rm = TRUE),
+    age_mean  = mean(age, na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+#write.csv(summ_sponge, "mean_age_sponge_supp.csv")
+```
+
+```{r}
+oto2 <- oto %>%
+  mutate(
+    Sponge_id = fct_reorder(Sponge_id, age, .fun = mean, na.rm = TRUE))
+
+#visualizing age variation across sampled sponges
+ggplot(oto2, aes(x = age, y = Sponge_id)) +
+   geom_point(aes( colour = sex, shape = Rank1),
+    size = 4,
+    alpha = 0.7
+  ) +
+    scale_color_manual(values = c(female = "#950952", male = "#104547")) +
+  scale_shape_manual(values = c(NotRank1 = 16, Rank1 = 18)) +
+  scale_size_continuous(name = "Total Length (mm)") +   # legend
+  labs(x = "Age (days)", y = "Sponge (group)", colour = "Sex") +
+  theme_classic()
+
+ggsave(file.path(output_dir, "Figure_S12.pdf"), width = 5, height = 4, units = "in")
+```
+
+## Session information
+
+The following output records the R, operating-system, and package versions used to render this report.
+
+```{r session-information}
+sessionInfo()
+```

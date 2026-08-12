@@ -1,0 +1,917 @@
+---
+title: "Risor ruber - Genetic analyses: relatedness and basic popgen"
+date: "2026-08-12"
+---
+
+This code refers to Bunholi et al. 2026 "Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby."
+
+## Analysis overview
+
+This report reproduces the population-genomic, spatial genetic-distance, and relatedness analyses for the ddRADseq dataset. The population-structure dataset contains 42 biological samples and two technical replicates; the relatedness dataset contains 33 retained individuals.
+Manuscript figures: 2A-D
+Supplementary figures: S6 and S7
+
+### Required inputs
+
+All inputs are provided in `data/relatedness_popgen/`:
+
+- "pop_m5_r07_wl_biallelic_mac5.noHWEexcess_p1e4_LDpruned.vcf" (population structure vcf)
+
+- "rel_m5_r095_wl_biallelic_mac16.noHWEexcess_p1e4.LDpruned.vcf" (relatedness vcf)
+
+- "Risor_ruber_2023_Pairwise_Distances.csv" (pairwise geographic distances)
+
+- "Risor_rel_pan_1664SNPs_withDist.csv" (dyad distances + relatedness data)
+
+- "Risor_metadata_geno_subset_with_all_variables.csv" (metadata all)
+
+User: please run this R Markdown file from the Scripts/ directory.
+
+### Software setup
+
+The following chunk lists the packages required by this report. 
+
+```{r setup-packages}
+# Install required packages before the first run.
+# Uncomment these commands only if the packages are not already installed.
+
+# install.packages(c(
+#   "tidyverse", "ggrepel", "lme4", "lmerTest", "performance",
+#   "vcfR", "hierfstat", "adegenet", "BiocManager", "remotes"
+# ))
+
+# SNPRelate is installed through Bioconductor:
+# BiocManager::install("SNPRelate")
+
+# radiator is installed from GitHub:
+# remotes::install_github("thierrygosselin/radiator")
+
+#load packages
+pkgs <- c(
+  "tidyverse", "ggrepel", "lme4", "lmerTest", "SNPRelate",
+  "performance", "vcfR", "hierfstat", "adegenet", "radiator"
+)
+invisible(lapply(pkgs, require, character.only = TRUE))
+```
+
+### Data preparation
+
+This section defines project relative paths, imports the two VCF datasets and associated tabular data, and standardizes identifiers used for individual and dyad matching. Generated intermediate files are written to `outputs/`.
+
+```{r}
+# Run this R Markdown file from the Scripts/ directory. All required inputs
+# are read from data/relatedness_popgen/ and generated files go to outputs/.
+data_dir <- file.path("..", "data", "relatedness_popgen")
+output_dir <- file.path("..", "outputs")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+vcf_all <- file.path(data_dir, "pop_m5_r07_wl_biallelic_mac5.noHWEexcess_p1e4_LDpruned.vcf")
+vcf_rel <- file.path(data_dir, "rel_m5_r095_wl_biallelic_mac16.noHWEexcess_p1e4.LDpruned.vcf")
+dist <- read.csv(file.path(data_dir, "Risor_ruber_2023_Pairwise_Distances.csv"))
+rel_df <- read.csv(file.path(data_dir, "Risor_rel_pan_1664SNPs_withDist.csv"))
+gds_out <- file.path(output_dir, "pop_m5_r07_wl_biallelic_mac5.noHWEexcess_p1e4_LDpruned.vcf.gds")
+
+meta_all <- read_csv(file.path(data_dir, "Risor_metadata_geno_subset_with_all_variables.csv")) #overall metadata
+meta_all <- meta_all %>%
+  mutate(sponge_id = if_else(sponge_id == "GOL_06", "GOL_6", sponge_id))
+sponge_meta <- meta_all %>%
+  dplyr::select(id, sponge_id, S_width_cm, Reef, S_species)
+```
+
+```{r}
+#helper functions
+std_id <- function(x) x |> stringr::str_trim() |> gsub("-", "_", x = _) #standardizing names
+std_pair <- function(a, b) if_else(a < b, paste(a,b,sep="__"), paste(b,a,sep="__")) #standardizing dyad direction
+```
+
+### Prepare the COANCESTRY input
+
+The relatedness VCF is converted to the allele-coded format required by COANCESTRY. The expected output is `outputs/new_coancestry_input_filtered_dataset_related.txt`; relatedness estimation itself is performed in COANCESTRY outside R (Windows GUI software https://www.zsl.org/about-zsl/resources/software/coancestry)
+
+```{r}
+related_data<- tidy_vcf(vcf_rel) #filtered dataset
+
+#Check what genotype columns exist
+names(related_data)
+```
+
+```{r}
+#VCF generated from STACKS does not have a GT column, but GT_BIN
+#GT_BIN: 0 = homozygous reference (0/0); 1 = heterozygous (0/1); 2 = homozygous alternative (1/1); NA = missing data
+
+#Create GT column based on GT_BIN
+related_data$GT <- dplyr::case_when(
+  related_data$GT_BIN == 0 ~ "001001",  #homozygous reference
+  related_data$GT_BIN == 1 ~ "001002",  #heterozygous
+  related_data$GT_BIN == 2 ~ "002002",  #homozygous alternate
+  TRUE ~ "000000"                       #missing data
+)
+
+#writing Coancestry input
+radiator::write_related(
+  data = related_data,
+  filename = file.path(output_dir, "new_coancestry_input_filtered_dataset.txt"))
+```
+
+#### Compare relatedness estimators
+
+The deposited COANCESTRY results contain several estimators. Their Spearman correlations are compared here to document estimator agreement and support use of the Wang estimator in the downstream models.
+rel_df is the output from COANCESTRY. The code above is only to instruct how to generate COANCESTRY input file from a VCF since it can be really tricky; however, it is not needed to reproduce the results since the relatedness estimations are already being provided.
+
+```{r}
+rel_all <- rel_df %>%
+  transmute(
+    Individual1 = std_id(Individual1),
+    Individual2 = std_id(Individual2),
+    pair = std_pair(std_id(Individual1), std_id(Individual2)),
+    Distance_m,
+    Wang, Ritland, LynchRd, LynchLi, QuelletGt, TrioML
+  )
+```
+
+```{r}
+estimators <- c("Wang","Ritland","LynchRd","QuelletGt")
+
+cor_mat <- cor(rel_all[,estimators], method="spearman", use="pairwise.complete.obs") #generating correlation matrix
+
+as.data.frame(as.table(cor_mat)) %>%
+  ggplot(aes(Var1, Var2, fill=Freq)) +
+  geom_tile() +
+  theme_minimal() +
+  labs(x=NULL, y=NULL, fill="Spearman ρ") +
+  coord_equal()
+```
+
+All p values are high (~0.8–1.0), showing strong correlation between metrics. Wang was then chosen because it performs well with moderate SNP numbers (Wang, 2002).
+
+## 1. Relatedness analyses
+
+In this section, the pairwise Wang relatedness is modeled as a function of geographic distance and environmental dissimilarity. 
+The expected outputs are model summaries and manuscript Figure 2A-B.
+
+```{r}
+hist(rel_df$Wang)
+```
+
+```{r}
+#arranging relatdness df and adding other metrics from metadata
+rel_df2 <- rel_df %>%
+  transmute(
+    Individual1 = std_id(Individual1),
+    Individual2 = std_id(Individual2),
+    Wang,
+    Distance_m) %>%
+  left_join(
+    meta_all %>%
+      transmute(
+        Individual1 = std_id(id),
+        sp1 = sponge_id,
+        size1 = S_width_cm,
+        reef1 = Reef,
+        species1 = S_species,
+        is_male1 = is_male),
+    by = "Individual1") %>%
+  left_join(
+    meta_all %>%
+      transmute(
+        Individual2 = std_id(id),
+        sp2 = sponge_id,
+        size2 = S_width_cm,
+        reef2 = Reef,
+        species2 = S_species,
+        is_male2 = is_male
+      ),
+    by = "Individual2"
+  ) %>%
+  mutate(
+    same_sponge    = sp1 == sp2,
+    same_species   = species1 == species2,
+    diff_sponge_sz = abs(size1 - size2),
+    same_reef      = reef1 == reef2,
+    same_sex       = is_male1 == is_male2,
+    distance_km    = Distance_m / 1000,
+    log_dist       = log1p(distance_km),
+    i              = factor(Individual1),
+    j              = factor(Individual2)
+  )
+
+```
+
+```{r}
+##LMM: Wang ~ geo_dist + env metrics (relatedness dataset: 33 indv = 528 dyads)
+m_rel <- lmer(Wang ~ log_dist + same_sponge + diff_sponge_sz + same_reef + same_species + same_sex +
+                (1|i) + (1|j),
+             data = rel_df2, REML = TRUE)
+summary(m_rel)
+```
+
+```{r}
+#Checking model fit 
+model_performance(m_rel)
+check_model(m_rel)
+check_collinearity(m_rel)
+isSingular(m_rel) #small but still present
+r2(m_rel) #fixed effects explain less than 1% of genetic distance
+```
+
+Interpretation:
+
+- Relatedness is centered and scaled relative to allele frequencies, so it's more sensitive to subtle kinship patterns and therefore lots of variance is attributed to individual identity (dyad structure) whereas only 4.5% is explained by fixed effects
+- Some individuals are generally more related to others than average (background structure), but not in a way predicted by sponge/reef variables.
+- Relatedness patterns are not ecologically structured at the microhabitat scale.
+
+### Visualize relatedness
+
+Kin structure - are individuals sharing a sponge more related than everyone else?
+
+```{r}
+#arranging df
+rel_df2 <- rel_df2 %>%
+  mutate(
+    dyad_loc = case_when(
+      same_sponge ~ "same group",          #same sponge
+      same_reef   ~ "same reef",           #different sponge, same reef
+      TRUE        ~ "different reefs"
+    ),
+    dyad_loc = factor(
+      dyad_loc,
+      levels = c("different reefs", "same reef", "same group")
+    )
+  )
+
+means_df_rel <- rel_df2 %>%
+  dplyr::group_by(dyad_loc) %>%
+  dplyr::summarise(
+    mean_wang = mean(Wang, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+#Figure 2A - Relatedness distribution
+
+cols_rel <- c(
+  "same group"       = "grey70",
+  "same reef"       = "skyblue2",
+  "different reefs" = "skyblue4")
+
+ggplot(rel_df2, aes(x = Wang, fill = dyad_loc)) +
+  geom_density(alpha = 0.7, adjust = 1.0, color = NA) +
+  geom_vline(
+    data = means_df_rel,
+    aes(xintercept = mean_wang, colour = dyad_loc),
+    linewidth = 0.7,
+    linetype = "dashed",
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = cols_rel,
+    name   = "Dyad location"
+  ) +
+  scale_colour_manual(
+    values = cols_rel
+  ) +
+  labs(
+    x = "Relatedness (Wang estimator)",
+    y = "Density"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position      = c(0.05, 0.95),
+    legend.justification = c("left", "top"),
+    legend.background    = element_rect(fill = "white", colour = NA)
+  )
+
+ggsave(file.path(output_dir, "Fig_2A.pdf"), width = 5, height = 4, units = "in")
+```
+
+```{r}
+#Figure 2B - Relatedness by distance class
+
+#arranging df
+rel_df2 <- rel_df2 %>%
+  mutate(
+    distance_km = if_else(!is.na(distance_km),
+                          distance_km,
+                          Distance_m / 1000),
+    dist_bin = cut(
+      distance_km,
+      breaks = c(0, 0.025, 0.075, 0.2, 3.5, Inf),  # adjust if needed
+      labels = c("≤25 m", "25–75 m", "75–200 m",
+                 "200–3500 m", ">3500 m"),
+      include.lowest = TRUE
+    )
+  )
+
+bin_summ_rel <- rel_df2 %>%
+  group_by(dist_bin) %>%
+  summarise(
+    n_dyads = n(),
+    mean_wang = mean(Wang, na.rm = TRUE),
+    se_wang   = sd(Wang, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+#plotting
+ggplot(rel_df2, aes(x = dist_bin, y = Wang)) +
+  # raw points
+  geom_jitter(
+    width  = 0.15,
+    size   = 2,
+    alpha  = 0.35,
+    color  = "dodgerblue4"
+  ) +
+  #bin means
+  geom_point(
+    data        = bin_summ_rel,
+    aes(x = dist_bin, y = mean_wang),
+    inherit.aes = FALSE,
+    size        = 3,
+    color       = "black",
+    fill        = "black",
+    shape       = 21,
+    stroke      = 0.8
+  ) +
+  #error bars
+  geom_errorbar(
+    data        = bin_summ_rel,
+    aes(x = dist_bin,
+        ymin = mean_wang - se_wang,
+        ymax = mean_wang + se_wang),
+    inherit.aes = FALSE,
+    width       = 0.15,
+    color       = "black"
+  ) +
+  labs(
+    x = "Dyad distance category",
+    y = "Relatedness (Wang)"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x      = element_text(size = 10),
+    axis.text.y      = element_text(size = 10),
+    strip.background = element_blank(),
+    legend.position  = "none"
+  )
+
+ggsave(file.path(output_dir, "Fig_2B.pdf"), width = 5, height = 4, units = "in")
+```
+
+## 2. Pairwise genetic-distance analyses
+
+Identity-by-state (IBS) is calculated from the population VCF and converted to genetic distance (`1 - IBS`). 
+The GDS file is generated from the deposited VCF and is treated as a reproducible intermediate.
+
+```{r}
+# Convert the deposited VCF to GDS when needed, then open it for SNPRelate.The GDS file is a generated intermediate file 
+if (!file.exists(gds_out)) {
+  snpgdsVCF2GDS(
+    vcf.fn = vcf_all,
+    out.fn = gds_out,
+    method = "copy.num.of.ref"
+  )
+}
+snpgdsSummary(gds_out)
+genofile_all <- snpgdsOpen(gds_out)
+
+#Computing IBS (identical-by-state) to extract genetic distance
+ibs    <- snpgdsIBS(genofile_all, autosome.only = FALSE)
+ibsnum <- snpgdsIBSNum(genofile_all, autosome.only = FALSE) #counts
+samples <- ibs$sample.id
+
+#Obtaining genetic distance from IBS
+IBS<- ibs$ibs
+diag(IBS) <- 1
+
+Nmat<- ibsnum$ibs0 + ibsnum$ibs1 + ibsnum$ibs2 #number of loci shared instead of proportion
+
+D <- 1 - IBS #calculating genetic distance matrix 
+rownames(D) <- colnames(D) <- samples
+rownames(IBS) <- colnames(IBS) <- samples
+rownames(Nmat)   <- colnames(Nmat)   <- samples
+
+```
+
+### Assemble and model pairwise genetic distance
+
+Genetic-distance dyads are matched to geographic and sponge metadata. Parallel models are fitted for the complete sample set and the filtered main-lineage set; 
+their summaries and diagnostics provide the statistical results underlying Figure 2C-D.
+
+```{r}
+#Preparing data - cleaning IBS matrix
+id_map <- meta_all %>%
+  mutate(
+    ind_id = str_match(id, ".*_(\\d+)(?:_d)?$")[,2] |> as.integer(),  # 52 from golden_52 or golden_52_d
+    is_rep = str_detect(id, "_d$")
+  ) %>%
+  arrange(ind_id, is_rep) %>%                 #prefer non-_d if duplicated
+  group_by(ind_id, sponge_id) %>% slice(1) %>% ungroup() %>%
+  transmute(ind_id, sponge_id, sample = id)
+
+keep_samples <- id_map$sample
+
+IBS_clean <- IBS[keep_samples, keep_samples]
+
+#Tidy IBS to one row per dyad
+pairs_ibs <- IBS_clean %>%
+  as.data.frame() %>%
+  rownames_to_column("Individual1") %>%
+  pivot_longer(-Individual1, names_to = "Individual2", values_to = "IBS")
+
+#Tidy n_loci in the same way and join
+pairs_n <- Nmat %>%
+  as.data.frame() %>%
+  rownames_to_column("Individual1") %>%
+  pivot_longer(-Individual1, names_to = "Individual2", values_to = "n_loci")
+
+pairs_ibs <- pairs_ibs %>%
+  left_join(pairs_n, by = c("Individual1","Individual2")) %>%
+  # keep one triangle only
+  filter(Individual1 < Individual2) %>%
+  mutate(
+    gen_dist   = 1 - IBS,
+    canon_pair = paste(pmin(Individual1, Individual2),
+                       pmax(Individual1, Individual2), sep = "__")
+  )
+
+head(pairs_ibs)
+```
+
+```{r}
+#Preparing data - pairwise geo distance 
+dist2 <- dist %>%
+  dplyr::mutate(
+    a_id = pmin(IN_ind_id, NEAR_ind_id),
+    b_id = pmax(IN_ind_id, NEAR_ind_id),
+    a_sp = if_else(IN_ind_id <= NEAR_ind_id, IN_sponge_id, NEAR_sponge_id),
+    b_sp = if_else(IN_ind_id <= NEAR_ind_id, NEAR_sponge_id, IN_sponge_id)
+  ) %>%
+  distinct(a_id, b_id, a_sp, b_sp, .keep_all = TRUE) %>%
+  left_join(id_map %>% rename(a_id = ind_id, a_sp = sponge_id, s1 = sample),
+            by = c("a_id","a_sp")) %>%
+  left_join(id_map %>% rename(b_id = ind_id, b_sp = sponge_id, s2 = sample),
+            by = c("b_id","b_sp")) %>%
+  dplyr::mutate(
+    Individual1 = pmin(s1, s2),
+    Individual2 = pmax(s1, s2),
+    canon_pair  = paste(Individual1, Individual2, sep = "__")
+  ) %>%
+  dplyr::select(canon_pair, Individual1, Individual2, Distance_m) %>%
+  distinct(canon_pair, .keep_all = TRUE)
+
+dist2 <- dist2 %>%
+  filter(!is.na(Individual1), !is.na(Individual2)) #filtering to only pairs with relatedness data
+
+#Mege genetic distance and geogrpahic distance
+df_merged <- pairs_ibs %>%
+  inner_join(dist2, by = "canon_pair")
+
+#write.csv(df_merged, "genetic_geographic_distance_fulldataset.csv")
+```
+
+```{r}
+#Preparing data - gen dist + geo dist - full dataset and filtered dataset
+
+diff_cluster <- c("golden_2","golden_3","golden_21","golden_64",
+               "grunt_159","grunt_181","long_209","long_219","grunt_127", "golden_52_d", "golden_55_d")
+
+lin_map <- tibble(sample = samples,
+                  lineage = if_else(sample %in% diff_cluster, "out","main")) #mapping to which cluster each sample blong to
+
+gd<- df_merged %>%
+  transmute(Individual1 = std_id(Individual1.x),
+            Individual2 = std_id(Individual2.x),
+            gen_dist, n_loci, Distance_m)
+
+#all samples - full dataset
+gd_all <- gd %>%
+  left_join(lin_map %>% rename(Individual1 = sample, lin1 = lineage), by = "Individual1") %>%
+  left_join(lin_map %>% rename(Individual2 = sample, lin2 = lineage), by = "Individual2") %>%
+  mutate(distance_km = Distance_m/1000,
+         log_dist    = log1p(distance_km),
+         i = factor(Individual1),
+         j = factor(Individual2),
+         w_std = n_loci/mean(n_loci, na.rm=TRUE)) #weigth loci
+
+#adding env metrics from sponge for each individual in the pair
+gd_sponge_all <- gd_all %>%
+  left_join(sponge_meta %>% 
+              dplyr::select(id, sponge_id, S_width_cm, S_species, Reef) %>%
+              rename(Individual1 = id, 
+                     sp1 = sponge_id, 
+                     size1 = S_width_cm,
+                     species1 = S_species,
+                     reef1 = Reef),
+            by = "Individual1") %>%
+  left_join(sponge_meta %>% 
+              dplyr::select(id, sponge_id, S_width_cm, S_species, Reef) %>%
+              rename(Individual2 = id, 
+                     sp2 = sponge_id, 
+                     size2 = S_width_cm,
+                     species2 = S_species,
+                     reef2 = Reef),
+            by = "Individual2") %>%
+  mutate(
+    same_sponge      = sp1 == sp2,
+    same_reef        = reef1 == reef2,
+    same_species     = species1 == species2,
+    diff_sponge_sz   = abs(size1 - size2),
+    log_dist_km      = log1p(distance_km),
+    same_reef        = factor(same_reef),
+    same_sponge      = factor(same_sponge),
+    same_species     = factor(same_species),
+    i                = factor(Individual1),
+    j                = factor(Individual2)) #creating variables combining each indv from dyad
+
+#only main cluster - filtered dataset
+gd_main <- gd %>%
+  left_join(lin_map %>% rename(Individual1 = sample, lin1 = lineage), by = "Individual1") %>%
+  left_join(lin_map %>% rename(Individual2 = sample, lin2 = lineage), by = "Individual2") %>%
+  filter(lin1=="main", lin2=="main") %>%
+  mutate(distance_km = Distance_m/1000,
+         log_dist    = log1p(distance_km),
+         i = factor(Individual1),
+         j = factor(Individual2),
+         w_std = n_loci/mean(n_loci, na.rm=TRUE)) 
+
+#adding env metrics from sponge for each individual in the pair
+gd_sponge_main <- gd_main %>%
+  left_join(sponge_meta %>% 
+              dplyr::select(id, sponge_id, S_width_cm, S_species, Reef) %>%
+              rename(Individual1 = id, 
+                     sp1 = sponge_id, 
+                     size1 = S_width_cm,
+                     species1 = S_species,
+                     reef1 = Reef),
+            by = "Individual1") %>%
+  left_join(sponge_meta %>% 
+              dplyr::select(id, sponge_id, S_width_cm, S_species, Reef) %>%
+              rename(Individual2 = id, 
+                     sp2 = sponge_id, 
+                     size2 = S_width_cm,
+                     species2 = S_species,
+                     reef2 = Reef),
+            by = "Individual2") %>%
+  mutate(
+    same_sponge      = sp1 == sp2,
+    same_reef        = reef1 == reef2,
+    same_species     = species1 == species2,
+    diff_sponge_sz   = abs(size1 - size2),
+    log_dist_km      = log1p(distance_km),
+    same_reef        = factor(same_reef),
+    same_sponge      = factor(same_sponge),
+    same_species     = factor(same_species),
+    i                = factor(Individual1),
+    j                = factor(Individual2))#creating variables combining each indv from dyad
+
+```
+
+#### Full population-genomic dataset
+
+This model uses all 42 biological individuals (861 unique dyads) to test whether genetic distance varies with geographic separation, shared sponge occupancy, difference in sponge size, shared reef, or shared host species. Random intercepts for both members of each dyad account for the repeated appearance of individuals across pairwise observations.
+
+```{r}
+#LMM: gen_dist ~ geo_dist + env metrics (full dataset: 42 indv = 861 dyads)
+m_all<- lmer(
+  gen_dist ~ log_dist_km + same_sponge + diff_sponge_sz + same_reef + same_species +
+    (1 | i) + (1 | j),
+  data = gd_sponge_all
+)
+
+summary(m_all)
+```
+
+```{r}
+#Checking model fit 
+model_performance(m_all)
+check_model(m_all)
+check_collinearity(m_all)
+isSingular(m_all) #small but still present
+r2(m_all) #fixed effects explain less than 1% of genetic distance
+```
+
+#### Filtered main-lineage dataset
+
+The same model is repeated for the 33 individuals retained in the main-lineage dataset (528 unique dyads). Holding the model structure constant permits direct comparison with the complete dataset and tests whether the reported spatial and ecological patterns persist after removal of the documented high-F individuals and technical replicates. The model summary and diagnostic outputs support the filtered-dataset results visualized in Figure 2C-D.
+
+```{r}
+#LMM: gen_dist ~ geo_dist + env metrics (filtered dataset: 33 indv = 528 dyads)
+m_main<- lmer(
+  gen_dist ~ log_dist_km + same_sponge + diff_sponge_sz + same_reef + same_species +
+    (1 | i) + (1 | j),
+  data = gd_sponge_main
+)
+
+summary(m_main)
+```
+
+```{r}
+#Checking model fit 
+model_performance(m_main)
+check_model(m_main)
+check_collinearity(m_main)
+isSingular(m_main) #small but still present
+r2(m_main) #fixed effects explain only 8% of genetic distance
+```
+
+#### Visualize the filtered genetic-distance results
+
+```{r}
+#Figure 2C - Genetic-distance distribution
+
+#arranging df
+gd_sponge_main_v2 <- gd_sponge_main %>%
+  mutate(
+    distance_km = coalesce(distance_km, Distance_m / 1000),
+    dist_bin = cut(
+      distance_km,
+      breaks = c(0, 0.025, 0.075, 0.2, 3.5, Inf),
+      labels = c("≤25 m", "25–75 m", "75–200 m", "200–3500 m", ">3500 m"),
+      include.lowest = TRUE),
+    dyad_loc = case_when(
+      as.logical(same_sponge) ~ "same group",
+      as.logical(same_reef)   ~ "same reef",
+      TRUE                    ~ "different reefs"),
+    dyad_loc = factor(dyad_loc,
+                      levels = c("different reefs", "same reef", "same group")))
+
+means_df_gd <- gd_sponge_main_v2 %>%
+  dplyr::group_by(dyad_loc) %>%
+  dplyr::summarise(
+    mean_gd = mean(gen_dist, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#plotting
+cols_gd <- c(
+  "same group"       = "grey70",
+  "same reef"       = "darkseagreen3",
+  "different reefs" = "darkslategray4"
+)
+
+ggplot(gd_sponge_main_v2, aes(x = gen_dist, fill = dyad_loc)) +
+  geom_density(alpha = 0.7, adjust = 1.0, color = NA) +
+  geom_vline(
+    data = means_df_gd,
+    aes(xintercept = mean_gd, colour = dyad_loc),
+    linewidth = 0.7,
+    linetype = "dashed",
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = cols_gd,
+    name   = "Dyad location"
+  ) +
+  scale_colour_manual(
+    values = cols_gd
+  ) +
+  labs(
+    x = "Genetic distance (1 - IBS)",
+    y = "Density"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position      = c(0.05, 0.95),
+    legend.justification = c("left", "top"),
+    legend.background    = element_rect(fill = "white", colour = NA)
+  )
+
+ggsave(file.path(output_dir, "Fig_2C.pdf"), width = 5, height = 4, units = "in")
+
+```
+
+```{r}
+#Figure 2D - Genetic distance by distance class
+
+#arranging df
+bin_summ_gd<- gd_sponge_main_v2 %>%
+  group_by(dist_bin) %>%
+  summarise(
+    n_dyads = n(),
+    mean_gd = mean(gen_dist, na.rm = TRUE),
+    se_gd   = sd(gen_dist, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+#plotting
+ggplot(gd_sponge_main_v2, aes(x = dist_bin, y = gen_dist)) +
+  # raw points
+  geom_jitter(
+    width  = 0.15,
+    size   = 2,
+    alpha  = 0.35,
+    color  = "aquamarine4"
+  ) +
+  # bin means
+  geom_point(
+    data        = bin_summ_gd,
+    aes(x = dist_bin, y = mean_gd),
+    inherit.aes = FALSE,
+    size        = 3,
+    color       = "black",
+    fill        = "black",
+    shape       = 21,
+    stroke      = 0.8
+  ) +
+  # error bars
+  geom_errorbar(
+    data        = bin_summ_gd,
+    aes(x = dist_bin,
+        ymin = mean_gd - se_gd,
+        ymax = mean_gd + se_gd),
+    inherit.aes = FALSE,
+    width       = 0.15,
+    color       = "black"
+  ) +
+  labs(
+    x = "Dyad distance category",
+    y = "Genetic distance (1 - IBS)"
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x      = element_text(size = 10),
+    axis.text.y      = element_text(size = 10),
+    strip.background = element_blank(),
+    legend.position  = "none"
+  )
+
+ggsave(file.path(output_dir, "Fig_2D.pdf"), width = 5, height = 4, units = "in")
+```
+
+## 3. Population-genomic summaries and PCA
+
+The population VCF is converted to `genind` and GDS representations to calculate heterozygosity and inbreeding. Figure S6 presents the PCA of 41 biological individuals: the two technical replicates and the PCA outlier `grunt_159` are excluded, while the remaining documented high-F individuals are retained. Figure S7 provides the corresponding reduced-dataset sensitivity comparison after all documented high-F individuals are removed.
+
+```{r}
+#Converting SNPs to genind object
+
+#Full dataset
+vcf_full  <- read.vcfR(vcf_all)
+genind_full <- vcfR2genind(vcf_full) #FULL DATASET
+pop(genind_full) <- factor(rep("pop1", nInd(genind_full))) #same population
+hf_full <- genind2hierfstat(genind_full)
+
+#Fitered dataset
+# individuals to remove
+rm_inds <- c("golden_2",  "golden_3",  "golden_21", "golden_64", "grunt_127", "grunt_159" ,"grunt_181", "long_209",  "long_219" , "golden_52_d", "golden_55_d")
+
+genind_fil <- genind_full[!indNames(genind_full) %in% rm_inds, ]
+hf_fil <- genind2hierfstat(genind_fil)
+
+```
+
+
+```{r}
+basic_stats_all <- basic.stats(hf_full)
+basic_stats_all$overall["Fis"] #Overall (global) inbreeding coefficient F_IS 0.363
+
+basic_stats_fil <- basic.stats(hf_fil) #filtered dataset
+basic_stats_fil$overall["Fis"] 
+
+Ho_all <- basic_stats_all$Ho # Observed heterozygosity per locus
+He_all <- basic_stats_all$Hs # Expected heterozygosity per locus
+
+Ho_fil <- basic_stats_fil$Ho 
+He_fil <- basic_stats_fil$Hs 
+
+#mean overall
+mean(Ho_all, na.rm = TRUE) #observed 0.2115303
+mean(He_all, na.rm = TRUE) #expected 0.3320372
+
+mean(Ho_fil, na.rm = TRUE) #observed 0.2284386
+mean(He_fil, na.rm = TRUE) #expected 0.2609608
+
+head(basic_stats_all$overall)
+
+```
+
+```{r}
+#Using SNPRelate package
+all_ids <- read.gdsn(index.gdsn(genofile_all, "sample.id")) #get all samples id
+
+# Figure S6 uses the biological genotyped dataset after excluding the PCA
+# outlier grunt_159. The two technical replicates are also excluded; the
+# remaining documented high-F biological individuals are retained.
+remove_ids <- c("golden_52_d", "golden_55_d", "grunt_159")
+
+keep_ids <- setdiff(all_ids, remove_ids)
+
+#running PCA
+pca_all <- snpgdsPCA(
+  genofile_all,
+  sample.id = keep_ids,
+  autosome.only = TRUE
+)
+
+#generate PCA df
+pca.df.all<- data.frame(
+  id = pca_all$sample.id,
+  PC1 = pca_all$eigenvect[,1],
+  PC2 = pca_all$eigenvect[,2],
+  PC3 = pca_all$eigenvect[,3]
+)
+#Merge PCA df with metadata
+pca.df.all<- merge(pca.df.all, meta_all, by = "id")
+head(pca.df.all)
+
+```
+
+```{r}
+#Plotting PCA
+pc.percent <- pca_all$varprop * 100 #obtain percent variance explained
+
+PCA_all<- ggplot(pca.df.all, aes(PC1, PC2, color = site, label = id)) +
+  geom_point(size = 2) +
+  ggrepel::geom_text_repel(
+    size = 3,
+    max.overlaps = Inf, 
+    box.padding  = .4,
+    point.padding = .25,
+    min.segment.length = 0
+  ) +
+  labs(
+    x = paste0("PC1 (", round(pc.percent[1], 1), "%)"),
+    y = paste0("PC2 (", round(pc.percent[2], 1), "%)")
+  ) +
+ scale_color_manual(values = c("curlew"="#008B8B", "golden" = "#DAA520", "grunt" = "#6B8E23", "long" = "#000080")) +
+  theme_bw()
+
+PCA_all
+
+ggsave(file.path(output_dir, "Figure_S6.pdf"), width = 8, height = 6, units = "in")
+
+```
+PC1 is explaining a lot - which means a strong separation between the two clusters. This is probably driven by the little cluster being really similar to each other - very homozygous.
+
+### Missing-data sensitivity check
+
+Sample-level missingness is compared with PCA position to verify that clustering is not an artifact of uneven genotype completeness.
+```{r}
+miss <- snpgdsSampMissRate(genofile_all)
+sample.id <- read.gdsn(index.gdsn(genofile_all, "sample.id"))
+
+miss.df <- data.frame(
+  id = sample.id,
+  miss = miss
+) 
+head(miss.df) #less than 10% missing data in all samples
+```
+
+```{r}
+
+miss_threshold <- 0.3
+
+bad_ids <- miss.df$id[miss.df$miss > miss_threshold]
+
+bad_ids
+bad_ids <- c( "golden_2",  "golden_3",  "golden_21", "golden_64", "grunt_127", "grunt_159" ,"grunt_181", "long_209",  "long_219" , "golden_52_d", "golden_55_d") #samples with highest missing data - let's see if removing them would change the PC structure
+
+keep_ids <- setdiff(miss.df$id, bad_ids)
+
+pca_test <- snpgdsPCA(genofile_all, sample.id = keep_ids)
+
+pca.df.test<- data.frame(
+  id = pca_test$sample.id,
+  PC1 = pca_test$eigenvect[,1],
+  PC2 = pca_test$eigenvect[,2],
+  PC3 = pca_test$eigenvect[,3]
+)
+
+pca.df.test<- merge(pca.df.test, meta_all, by = "id")
+head(pca.df.test)
+```
+
+```{r}
+pc.percent.test <- pca_test$varprop * 100
+
+pc.percent.test[1:3]
+
+PCA_all.test<- ggplot(pca.df.test, aes(PC1, PC2, color = site, label = id)) +
+  geom_point(size = 2) +
+  ggrepel::geom_text_repel(
+    size = 3,
+    max.overlaps = Inf, 
+    box.padding  = .4,
+    point.padding = .25,
+    min.segment.length = 0
+  ) +
+  labs(
+    x = paste0("PC1 (", round(pc.percent[1], 1), "%)"),
+    y = paste0("PC2 (", round(pc.percent[2], 1), "%)")
+  ) +
+ scale_color_manual(values = c("curlew"="#008B8B", "golden" = "#DAA520", "grunt" = "#6B8E23", "long" = "#000080")) +
+  theme_bw()
+
+PCA_all.test 
+
+ggsave(file.path(output_dir, "Figure_S7.pdf"), width = 8, height = 6, units = "in")
+```
+Missing data is low across samples and therefore is not driving clustering separation.
+
+## Session information
+
+The following output records the R, operating-system, and package versions used to render this report.
+
+```{r session-information}
+sessionInfo()
+```
