@@ -1,8 +1,8 @@
 # Risor_Social-Life-History
 
-This README file was updated on 2026-08-12 by Ingrid Bunholi.
+This README file was updated on 2026-08-12 by xxx.
 
-This archive contains the processed data, metadata, bioinformatics workflows, and R scripts used to reproduce the analyses, tables, and figures presented in Bunholi et al., *Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby*.
+This archive contains the processed data, metadata, bioinformatics workflows, and R scripts used to reproduce the analyses, tables, and figures presented in xxx et al., *Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby*.
 
 ## GENERAL INFORMATION
 
@@ -10,12 +10,12 @@ This archive contains the processed data, metadata, bioinformatics workflows, an
 
 **Brief description of the study:** This study examines how specialization on sponge habitats shapes habitat occupancy, social organization, relatedness, and life-history traits in the sponge-dwelling goby *Risor ruber*. Fish and host sponges were sampled at four patch reefs near Carrie Bow Cay, Belize, in July 2023.
 
-**Name:** Ingrid Vasconcellos Bunholi  
-**ORCID:** 0000-0001-5489-276X  
-**Email:** ingridbunholi@gmail.com  
-**Institution:** The University of Texas at Austin Marine Science Institute, Port Aransas, TX, USA  
-**Person responsible for code:** Ingrid Vasconcellos Bunholi  
-**Person responsible for data:** Ingrid Vasconcellos Bunholi
+**Name:** xxx  
+**ORCID:** xxx  
+**Email:** xxx 
+**Institution:** xxx 
+**Person responsible for code:** xxx  
+**Person responsible for data:** xxx
 
 ## CONTENTS OF THIS ARCHIVE
 
@@ -212,4 +212,3 @@ For complete descriptions of field collection, genomic processing, filtering dec
 
 * **Repository DOI:** **[ADD FINAL DOI]**
 * **Dataset citation:** **[ADD FINAL DATASET CITATION]**
-* **Reuse license:** **[ADD REPOSITORY LICENSE]**
