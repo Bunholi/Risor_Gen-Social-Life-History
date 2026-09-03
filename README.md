@@ -1,8 +1,8 @@
 # Risor_Social-Life-History
 
-This README file was updated on 2026-08-12 by xxx.
+This README file was updated on 2026-09-03 by Ingrid Vasconcellos Bunholi.
 
-This archive contains the processed data, metadata, bioinformatics workflows, and R scripts used to reproduce the analyses, tables, and figures presented in xxx et al., *Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby*.
+This archive contains the processed data, metadata, bioinformatics workflows, and R scripts used to reproduce the analyses, tables, and figures presented in Bunholi et al. (2026), *Ecological constraints of habitat specialization shape the social organization and life-history of a sponge-dwelling goby* - The American Naturalist.
 
 ## GENERAL INFORMATION
 
@@ -10,12 +10,12 @@ This archive contains the processed data, metadata, bioinformatics workflows, an
 
 **Brief description of the study:** This study examines how specialization on sponge habitats shapes habitat occupancy, social organization, relatedness, and life-history traits in the sponge-dwelling goby *Risor ruber*. Fish and host sponges were sampled at four patch reefs near Carrie Bow Cay, Belize, in July 2023.
 
-**Name:** xxx  
-**ORCID:** xxx  
-**Email:** xxx 
-**Institution:** xxx 
-**Person responsible for code:** xxx  
-**Person responsible for data:** xxx
+**Name:** Ingrid Vasconcellos Bunholi  
+**ORCID:** 0000-0001-5489-276X 
+**Email:** ingrid.bunholi@utexas.edu
+**Institution:** The University of Texas at Austin Marine Science Institute
+**Person responsible for code:** Ingrid Vasconcellos Bunholi
+**Person responsible for data:** Ingrid Vasconcellos Bunholi
 
 ## CONTENTS OF THIS ARCHIVE
 
@@ -207,8 +207,3 @@ The shell file documents the public sequence-processing workflow beginning with 
 Generated intermediate files, including STACKS working directories and the large preliminary VCFs used during exploratory parameter evaluation, are not duplicated in the archive because they are not required to rerun the final pipeline with the selected published parameters. The two parameter-selection figures are retained in `outputs/parameter_optimization/` for documentation.
 
 For complete descriptions of field collection, genomic processing, filtering decisions, and statistical analyses, see the Materials and Methods section of the associated manuscript.
-
-### Repository, citation, and reuse
-
-* **Repository DOI:** **[ADD FINAL DOI]**
-* **Dataset citation:** **[ADD FINAL DATASET CITATION]**
