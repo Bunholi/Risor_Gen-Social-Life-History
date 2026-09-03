@@ -11,15 +11,10 @@ This archive contains the processed data, metadata, bioinformatics workflows, an
 **Brief description of the study:** This study examines how specialization on sponge habitats shapes habitat occupancy, social organization, relatedness, and life-history traits in the sponge-dwelling goby *Risor ruber*. Fish and host sponges were sampled at four patch reefs near Carrie Bow Cay, Belize, in July 2023.
 
 **Name:** Ingrid Vasconcellos Bunholi
-
 **ORCID:** 0000-0001-5489-276X 
-
 **Email:** ingrid.bunholi@utexas.edu
-
 **Institution:** The University of Texas at Austin Marine Science Institute
-
 **Person responsible for code:** Ingrid Vasconcellos Bunholi
-
 **Person responsible for data:** Ingrid Vasconcellos Bunholi
 
 ## CONTENTS OF THIS ARCHIVE
